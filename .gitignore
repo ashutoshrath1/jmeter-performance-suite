@@ -1,0 +1,16 @@
+.DS_Store
+target/
+reports/
+logs/
+temp/
+report-output/
+
+*.jtl
+*-html/
+*.log
+*.zip
+
+# IDE/editor
+.idea/
+*.iml
+.vscode/

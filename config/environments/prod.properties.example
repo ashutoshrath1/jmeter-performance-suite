@@ -1,0 +1,21 @@
+# Production Environment Configuration Example
+environment=prod
+protocol=https
+host=api.example.com
+port=443
+base_url=${protocol}://${host}
+health.path=/health
+health.timeout.ms=3000
+health.check.enabled=true
+auto_open_reports=false
+
+# Test Configuration
+target_level=50
+ramp_up=60
+steps=5
+hold_time=300
+
+# SLA Thresholds
+max_response_time_ms=1000
+max_error_rate_percent=0.1
+min_throughput_tps=20
