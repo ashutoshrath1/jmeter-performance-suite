@@ -3,3 +3,11 @@ reports/
 logs/
 .idea/
 *.log
+.DS_Store
+temp/
+report-output/
+*.jtl
+*-html/
+*.zip
+*.iml
+.vscode/
