@@ -1,0 +1,5 @@
+target/
+reports/
+logs/
+.idea/
+*.log

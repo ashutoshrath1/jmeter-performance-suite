@@ -42,6 +42,10 @@ import java.util.Properties;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+/**
+ * Orchestrates end-to-end execution of configured JMeter plans, including setup,
+ * health checks, plan runs, and report generation for the selected suite.
+ */
 public class JMeterTestRunner {
 
     private static final String JMETER_PROPERTIES = "config/jmeter.properties";
@@ -71,6 +75,9 @@ public class JMeterTestRunner {
         }
     }
 
+    /**
+     * Executes the selected suite for the configured environment and returns process exit status.
+     */
     public int run() throws Exception {
         createWorkingDirs();
         initJMeter();
@@ -148,6 +155,9 @@ public class JMeterTestRunner {
         }
     }
 
+    /**
+     * Performs an optional pre-run health check against the configured target endpoint.
+     */
     private boolean performHealthCheck() {
         String skipHealthCheck = System.getenv("SKIP_HEALTH_CHECK");
         if (skipHealthCheck != null && Boolean.parseBoolean(skipHealthCheck)) {
@@ -183,6 +193,9 @@ public class JMeterTestRunner {
         }
     }
 
+    /**
+     * Runs a single JMeter plan and evaluates pass/fail using sample and error thresholds.
+     */
     private boolean runPlan(PlanDefinition plan) {
         Path jmxPath = plan.jmxPath();
         if (!Files.exists(jmxPath)) {
@@ -262,6 +275,9 @@ public class JMeterTestRunner {
         Files.createDirectories(artifacts.htmlDir());
     }
 
+    /**
+     * Generates HTML report artifacts for a completed plan with CLI fallback support.
+     */
     private void generateReport(PlanDefinition plan, ReportArtifactPaths artifacts, ResultCollector collector) throws Exception {
         JMeterUtils.setProperty("report.output.dir", artifacts.htmlDir().toString());
         JMeterUtils.setProperty("jmeter.reportgenerator.exporter.html.property.output_dir", artifacts.htmlDir().toString());
@@ -430,6 +446,9 @@ public class JMeterTestRunner {
         }
     }
 
+    /**
+     * Recursively applies configured host and protocol overrides to HTTP samplers.
+     */
     private void applyEnvironmentOverrides(HashTree tree) {
         for (Object key : tree.keySet()) {
             if (key instanceof HTTPSamplerProxy) {
@@ -469,6 +488,9 @@ public class JMeterTestRunner {
         return value != null ? value : defaultValue;
     }
 
+    /**
+     * Reads a JTL file and computes aggregate sample and error counts.
+     */
     private ExecutionStats readExecutionStats(Path jtlPath) throws IOException {
         try (Stream<String> lines = Files.lines(jtlPath)) {
             long[] counts = lines.skip(1).map(line -> line.split(",", -1)).reduce(
