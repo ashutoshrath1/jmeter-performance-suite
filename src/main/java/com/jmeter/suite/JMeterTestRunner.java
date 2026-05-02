@@ -56,10 +56,16 @@ public class JMeterTestRunner {
     private final RunnerArgs runnerArgs;
     private EnvironmentConfig environmentConfig;
 
+    /**
+     * Creates a runner bound to parsed command-line arguments.
+     */
     public JMeterTestRunner(RunnerArgs runnerArgs) {
         this.runnerArgs = runnerArgs;
     }
 
+    /**
+     * Parses arguments, executes the run, and exits with the resulting status code.
+     */
     public static void main(String[] args) {
         System.setProperty("org.apache.logging.log4j.simplelog.StatusLogger.level", "OFF");
         System.setProperty("log4j2.statusLoggerLevel", "OFF");
@@ -115,11 +121,17 @@ public class JMeterTestRunner {
         return failures.isEmpty() ? 0 : 1;
     }
 
+    /**
+     * Ensures expected output directories exist before execution starts.
+     */
     private void createWorkingDirs() throws IOException {
         Files.createDirectories(Paths.get(REPORTS_DIR));
         Files.createDirectories(Paths.get(LOGS_DIR));
     }
 
+    /**
+     * Initializes JMeter runtime properties, logging, and save-service defaults.
+     */
     private void initJMeter() throws IOException {
         String log4jConfig = Paths.get("bin", "log4j2.xml").toAbsolutePath().normalize().toString();
         String jmeterLogFile = Paths.get(LOGS_DIR, "jmeter.log").toString();
@@ -143,11 +155,17 @@ public class JMeterTestRunner {
         SaveService.loadProperties();
     }
 
+    /**
+     * Applies report thresholds when they are missing from active properties.
+     */
     private void ensureReportDefaults() {
         setIfMissing("jmeter.reportgenerator.apdex_satisfied_threshold", "500");
         setIfMissing("jmeter.reportgenerator.apdex_tolerated_threshold", "1500");
     }
 
+    /**
+     * Sets a JMeter property only when the current value is absent or unresolved.
+     */
     private void setIfMissing(String key, String defaultValue) {
         String current = JMeterUtils.getProperty(key);
         if (current == null || current.trim().isEmpty() || current.contains("${")) {
@@ -251,6 +269,9 @@ public class JMeterTestRunner {
         }
     }
 
+    /**
+     * Creates a non-appending collector that writes samples to the given JTL path.
+     */
     private ResultCollector createCollector(Path jtlPath) {
         Summariser summariser = new Summariser("summary");
         ResultCollector collector = new ResultCollector(summariser);
@@ -259,6 +280,9 @@ public class JMeterTestRunner {
         return collector;
     }
 
+    /**
+     * Builds timestamped artifact paths for a single plan execution.
+     */
     private ReportArtifactPaths buildArtifactPaths(PlanDefinition plan) {
         String runId = String.valueOf(System.currentTimeMillis());
         Path jtlPath = Paths.get(REPORTS_DIR, plan.id() + "-" + runId + ".jtl");
@@ -267,6 +291,9 @@ public class JMeterTestRunner {
         return new ReportArtifactPaths(jtlPath, htmlDir, zipPath);
     }
 
+    /**
+     * Cleans old artifacts and prepares empty output locations for the current run.
+     */
     private void prepareOutputPaths(ReportArtifactPaths artifacts) throws IOException {
         Files.deleteIfExists(artifacts.jtlPath());
         deleteDir(artifacts.htmlDir());
@@ -298,6 +325,9 @@ public class JMeterTestRunner {
         }
     }
 
+    /**
+     * Attempts HTML report generation through the JMeter CLI as a fallback path.
+     */
     private boolean tryCliReport(Path jtlPath, Path htmlDir) {
         try {
             ProcessBuilder pb = new ProcessBuilder("jmeter", "-g", jtlPath.toString(), "-o", htmlDir.toString());
@@ -311,6 +341,9 @@ public class JMeterTestRunner {
         }
     }
 
+    /**
+     * Handles post-report steps such as zipping, email delivery, and browser opening.
+     */
     private void postProcessReport(PlanDefinition plan, ReportArtifactPaths artifacts) {
         boolean isCi = Boolean.parseBoolean(System.getenv().getOrDefault("CI", "false"));
         try {
@@ -329,6 +362,9 @@ public class JMeterTestRunner {
         }
     }
 
+    /**
+     * Sends the generated report archive when SMTP environment settings are provided.
+     */
     private void sendEmailIfConfigured(String planName, ReportArtifactPaths artifacts) {
         String smtpHost = env("SMTP_HOST");
         String to = env("SMTP_TO");
@@ -383,6 +419,9 @@ public class JMeterTestRunner {
         }
     }
 
+    /**
+     * Builds a mail session with optional SMTP authentication.
+     */
     private Session buildMailSession(Properties props, String smtpUser, String smtpPass) {
         if (smtpUser != null && smtpPass != null) {
             return Session.getInstance(props, new Authenticator() {
@@ -395,6 +434,9 @@ public class JMeterTestRunner {
         return Session.getInstance(props);
     }
 
+    /**
+     * Opens the HTML report index in the default system browser.
+     */
     private void openInBrowser(Path indexHtml) {
         try {
             if (!Files.exists(indexHtml)) {
@@ -410,10 +452,16 @@ public class JMeterTestRunner {
         }
     }
 
+    /**
+     * Detects whether the current operating system is macOS.
+     */
     private boolean isMac() {
         return System.getProperty("os.name", "").toLowerCase().contains("mac");
     }
 
+    /**
+     * Archives all files under a directory into a zip file.
+     */
     private void zipDirectory(Path sourceDir, Path zipFile) throws IOException {
         try (java.util.zip.ZipOutputStream zos = new java.util.zip.ZipOutputStream(Files.newOutputStream(zipFile))) {
             Files.walk(sourceDir)
@@ -433,6 +481,9 @@ public class JMeterTestRunner {
         }
     }
 
+    /**
+     * Recursively removes existing result collectors from a loaded test tree.
+     */
     private void removeResultCollectors(HashTree tree) {
         List<Object> toRemove = new ArrayList<>();
         for (Object key : tree.keySet()) {
@@ -464,6 +515,9 @@ public class JMeterTestRunner {
         }
     }
 
+    /**
+     * Deletes a directory tree using best-effort cleanup semantics.
+     */
     private void deleteDir(Path dir) throws IOException {
         if (!Files.exists(dir)) {
             return;
@@ -479,10 +533,16 @@ public class JMeterTestRunner {
                 });
     }
 
+    /**
+     * Returns an environment variable value or null when undefined.
+     */
     private String env(String key) {
         return System.getenv(key);
     }
 
+    /**
+     * Returns an environment variable value with a default fallback.
+     */
     private String env(String key, String defaultValue) {
         String value = System.getenv(key);
         return value != null ? value : defaultValue;
@@ -508,27 +568,45 @@ public class JMeterTestRunner {
         }
     }
 
+    /**
+     * Logs a timestamped informational message to standard output.
+     */
     private void info(String message) {
         System.out.println("[" + LOG_TS.format(LocalDateTime.now()) + "] " + message);
     }
 
+    /**
+     * Holds aggregate sample and error counts derived from JTL data.
+     */
     private static final class ExecutionStats {
         private final long sampleCount;
         private final long errorCount;
 
+        /**
+         * Creates immutable execution statistics.
+         */
         private ExecutionStats(long sampleCount, long errorCount) {
             this.sampleCount = sampleCount;
             this.errorCount = errorCount;
         }
 
+        /**
+         * Returns total sample count.
+         */
         private long sampleCount() {
             return sampleCount;
         }
 
+        /**
+         * Returns failed sample count.
+         */
         private long errorCount() {
             return errorCount;
         }
 
+        /**
+         * Returns the failure percentage for the executed samples.
+         */
         private double errorRatePercent() {
             if (sampleCount == 0) {
                 return 100.0;
