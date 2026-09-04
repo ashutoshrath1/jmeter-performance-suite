@@ -67,6 +67,26 @@ public final class EnvironmentConfig {
     }
 
     /**
+     * Returns the target port, or an empty string when the protocol default should apply.
+     */
+    public String port() {
+        return get("port", "");
+    }
+
+    /**
+     * Returns the target origin as {@code protocol://host[:port]}, omitting the port when it is
+     * unset or already the default for the protocol.
+     */
+    public String baseUrl() {
+        String protocol = protocol();
+        String port = port().trim();
+        boolean defaultPort = port.isEmpty()
+                || ("https".equalsIgnoreCase(protocol) && "443".equals(port))
+                || ("http".equalsIgnoreCase(protocol) && "80".equals(port));
+        return protocol + "://" + host() + (defaultPort ? "" : ":" + port);
+    }
+
+    /**
      * Returns the health-check endpoint path.
      */
     public String healthPath() {
@@ -99,6 +119,28 @@ public final class EnvironmentConfig {
      */
     public double maxErrorRatePercent() {
         return Double.parseDouble(get("max_error_rate_percent", "0"));
+    }
+
+    /**
+     * Returns the 95th-percentile response time budget in milliseconds, or 0 when ungated.
+     *
+     * <p>Accepts the legacy {@code max_response_time_ms} key as an alias so existing environment
+     * files keep working; the gate is percentile-based because an absolute maximum fails on a single
+     * GC pause or warm-up outlier.
+     */
+    public long p95ResponseTimeMs() {
+        String value = properties.getProperty("p95_response_time_ms");
+        if (value == null || value.trim().isEmpty()) {
+            value = get("max_response_time_ms", "0");
+        }
+        return Long.parseLong(value.trim());
+    }
+
+    /**
+     * Returns the minimum acceptable throughput in samples per second, or 0 when ungated.
+     */
+    public double minThroughputTps() {
+        return Double.parseDouble(get("min_throughput_tps", "0"));
     }
 
     /**

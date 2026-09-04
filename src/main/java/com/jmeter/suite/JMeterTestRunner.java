@@ -3,6 +3,8 @@ package com.jmeter.suite;
 import com.jmeter.suite.config.EnvironmentConfig;
 import com.jmeter.suite.config.RunnerArgs;
 import com.jmeter.suite.model.PlanDefinition;
+import com.jmeter.suite.report.ExecutionStats;
+import com.jmeter.suite.report.JtlAnalyzer;
 import com.jmeter.suite.report.ReportArtifactPaths;
 import jakarta.mail.Authenticator;
 import jakarta.mail.Message;
@@ -40,7 +42,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 /**
  * Orchestrates end-to-end execution of configured JMeter plans, including setup,
@@ -150,9 +151,32 @@ public class JMeterTestRunner {
         JMeterUtils.setJMeterHome(Paths.get(".").toAbsolutePath().normalize().toString());
         JMeterUtils.loadJMeterProperties(jmeterProps.toString());
         JMeterUtils.setProperty("log_file", jmeterLogFile);
+        registerFunctionSearchPath();
         ensureReportDefaults();
         JMeterUtils.initLocale();
         SaveService.loadProperties();
+    }
+
+    /**
+     * Points JMeter's function scanner at this executable so {@code ${__...}} calls resolve.
+     *
+     * <p>JMeter discovers {@code Function} implementations by scanning {@code search_paths} plus
+     * {@code $JMETER_HOME/lib/ext}. An embedded runner has no {@code lib/ext}, so without this the
+     * registry comes up empty and every function - {@code __P}, {@code __property}, {@code __time} -
+     * is silently left in the test plan as literal text.
+     */
+    private void registerFunctionSearchPath() {
+        try {
+            Path self = Paths.get(JMeterTestRunner.class.getProtectionDomain()
+                    .getCodeSource().getLocation().toURI());
+            String existing = JMeterUtils.getPropDefault("search_paths", "");
+            String updated = existing.isEmpty()
+                    ? self.toAbsolutePath().toString()
+                    : existing + ";" + self.toAbsolutePath();
+            JMeterUtils.setProperty("search_paths", updated);
+        } catch (Exception ex) {
+            info("Warning: could not register function search path: " + ex.getMessage());
+        }
     }
 
     /**
@@ -188,7 +212,7 @@ public class JMeterTestRunner {
             return true;
         }
 
-        String url = environmentConfig.protocol() + "://" + environmentConfig.host() + environmentConfig.healthPath();
+        String url = environmentConfig.baseUrl() + environmentConfig.healthPath();
         int timeoutMs = environmentConfig.healthTimeoutMs();
         info("Health check: GET " + url + " (timeout=" + timeoutMs + "ms)");
 
@@ -245,28 +269,54 @@ public class JMeterTestRunner {
             engine.run();
 
             generateReport(plan, artifacts, collector);
-            ExecutionStats stats = readExecutionStats(artifacts.jtlPath());
-            boolean withinThreshold = stats.errorRatePercent() <= environmentConfig.maxErrorRatePercent();
+            ExecutionStats stats = JtlAnalyzer.analyze(artifacts.jtlPath());
 
             Duration duration = Duration.between(start, Instant.now());
             info("Completed: " + plan.id() + " in " + duration.toSeconds() + "s");
             info("Results: " + artifacts.jtlPath() + ", HTML: " + artifacts.htmlDir());
             info("Execution stats: samples=" + stats.sampleCount() + ", errors=" + stats.errorCount() +
-                    ", errorRate=" + String.format("%.2f", stats.errorRatePercent()) + "%");
+                    ", errorRate=" + String.format("%.2f", stats.errorRatePercent()) + "%" +
+                    ", p95=" + stats.p95ResponseTimeMs() + "ms" +
+                    ", throughput=" + String.format("%.2f", stats.throughputTps()) + "/s");
 
-            if (stats.sampleCount() == 0) {
-                info("Failed: " + plan.id() + " produced zero samples.");
-                return false;
-            }
-            if (!withinThreshold) {
-                info("Failed: " + plan.id() + " exceeded max_error_rate_percent=" + environmentConfig.maxErrorRatePercent());
-                return false;
-            }
-            return true;
+            return evaluateThresholds(plan, stats);
         } catch (Exception ex) {
             info("Failed: " + plan.id() + " due to " + ex.getMessage());
             return false;
         }
+    }
+
+    /**
+     * Evaluates all configured SLA gates for a completed plan and reports the first breach.
+     */
+    private boolean evaluateThresholds(PlanDefinition plan, ExecutionStats stats) {
+        if (stats.sampleCount() == 0) {
+            info("Failed: " + plan.id() + " produced zero samples.");
+            return false;
+        }
+
+        double maxErrorRate = environmentConfig.maxErrorRatePercent();
+        if (stats.errorRatePercent() > maxErrorRate) {
+            info("Failed: " + plan.id() + " error rate " + String.format("%.2f", stats.errorRatePercent())
+                    + "% exceeded max_error_rate_percent=" + maxErrorRate);
+            return false;
+        }
+
+        long p95Budget = environmentConfig.p95ResponseTimeMs();
+        if (p95Budget > 0 && stats.p95ResponseTimeMs() > p95Budget) {
+            info("Failed: " + plan.id() + " p95 " + stats.p95ResponseTimeMs()
+                    + "ms exceeded budget of " + p95Budget + "ms");
+            return false;
+        }
+
+        double minThroughput = environmentConfig.minThroughputTps();
+        if (minThroughput > 0 && stats.throughputTps() < minThroughput) {
+            info("Failed: " + plan.id() + " throughput " + String.format("%.2f", stats.throughputTps())
+                    + "/s below min_throughput_tps=" + minThroughput);
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -499,13 +549,22 @@ public class JMeterTestRunner {
 
     /**
      * Recursively applies configured host and protocol overrides to HTTP samplers.
+     *
+     * <p>Samplers whose domain or protocol already reference a variable or property (for example
+     * {@code ${host}}) are left untouched, so a plan can target more than one host by declaring its
+     * own variables. Only literal values are rewritten, which preserves the previous behaviour for
+     * plans that hardcode a domain.
      */
     private void applyEnvironmentOverrides(HashTree tree) {
         for (Object key : tree.keySet()) {
             if (key instanceof HTTPSamplerProxy) {
                 HTTPSamplerProxy sampler = (HTTPSamplerProxy) key;
-                sampler.setDomain(environmentConfig.host());
-                sampler.setProtocol(environmentConfig.protocol());
+                if (isLiteral(sampler.getDomain())) {
+                    sampler.setDomain(environmentConfig.host());
+                }
+                if (isLiteral(sampler.getProtocol())) {
+                    sampler.setProtocol(environmentConfig.protocol());
+                }
             } else if (key instanceof TestElement) {
                 HashTree childTree = tree.getTree(key);
                 if (childTree != null) {
@@ -513,6 +572,13 @@ public class JMeterTestRunner {
                 }
             }
         }
+    }
+
+    /**
+     * Returns true when a value is a plain literal rather than a JMeter variable or property call.
+     */
+    private boolean isLiteral(String value) {
+        return value == null || value.trim().isEmpty() || !value.contains("${");
     }
 
     /**
@@ -549,69 +615,10 @@ public class JMeterTestRunner {
     }
 
     /**
-     * Reads a JTL file and computes aggregate sample and error counts.
-     */
-    private ExecutionStats readExecutionStats(Path jtlPath) throws IOException {
-        try (Stream<String> lines = Files.lines(jtlPath)) {
-            long[] counts = lines.skip(1).map(line -> line.split(",", -1)).reduce(
-                    new long[]{0L, 0L},
-                    (acc, columns) -> {
-                        acc[0]++;
-                        if (columns.length > 7 && "false".equalsIgnoreCase(columns[7])) {
-                            acc[1]++;
-                        }
-                        return acc;
-                    },
-                    (left, right) -> new long[]{left[0] + right[0], left[1] + right[1]}
-            );
-            return new ExecutionStats(counts[0], counts[1]);
-        }
-    }
-
-    /**
      * Logs a timestamped informational message to standard output.
      */
     private void info(String message) {
         System.out.println("[" + LOG_TS.format(LocalDateTime.now()) + "] " + message);
     }
 
-    /**
-     * Holds aggregate sample and error counts derived from JTL data.
-     */
-    private static final class ExecutionStats {
-        private final long sampleCount;
-        private final long errorCount;
-
-        /**
-         * Creates immutable execution statistics.
-         */
-        private ExecutionStats(long sampleCount, long errorCount) {
-            this.sampleCount = sampleCount;
-            this.errorCount = errorCount;
-        }
-
-        /**
-         * Returns total sample count.
-         */
-        private long sampleCount() {
-            return sampleCount;
-        }
-
-        /**
-         * Returns failed sample count.
-         */
-        private long errorCount() {
-            return errorCount;
-        }
-
-        /**
-         * Returns the failure percentage for the executed samples.
-         */
-        private double errorRatePercent() {
-            if (sampleCount == 0) {
-                return 100.0;
-            }
-            return (errorCount * 100.0) / sampleCount;
-        }
-    }
 }

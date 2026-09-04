@@ -14,3 +14,7 @@ report-output/
 .idea/
 *.iml
 .vscode/
+
+# Agent/tool metadata
+.serena/
+.ua/

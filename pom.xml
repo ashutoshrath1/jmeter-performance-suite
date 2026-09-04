@@ -40,6 +40,16 @@
             <version>${jmeter.version}</version>
         </dependency>
 
+        <!--
+            Function implementations (__P, __property, __time, ...). Without this only the
+            Function interface ships, so every ${__...} call in a plan is left as literal text.
+        -->
+        <dependency>
+            <groupId>org.apache.jmeter</groupId>
+            <artifactId>ApacheJMeter_functions</artifactId>
+            <version>${jmeter.version}</version>
+        </dependency>
+
         <!-- Plugins used in the supplied JMX plans -->
         <dependency>
             <groupId>kg.apc</groupId>

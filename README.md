@@ -1,22 +1,18 @@
 # JMeter Performance Suite
 
-[![GitHub Actions](https://github.com/OWNER/REPO/actions/workflows/jmeter.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/jmeter.yml) <!-- Update OWNER/REPO after publishing -->
-
-Production-grade JMeter performance test boilerplate with a Java runner, parameterized plans, per-run artifacts, and CI/CD integration.
+JMeter performance test boilerplate with a Java runner, parameterized plans, and per-run artifacts.
 
 ## Overview
 - Baseline plan: `test-plans/baseline.jmx` (provided real test using BlazeMeter Concurrency Thread Group, Throughput Shaping Timer, JSON extractor, and assertions).
 - Templates: spike, stress, endurance, and breakpoint plans with Concurrency Thread Group, load profiles, and working HTTP samplers.
 - Java runner: executes JMX via embedded JMeter + plugin libraries with health checks, report packaging, and optional email delivery.
-- CI/CD: GitHub Actions and Jenkins samples call the Java runner and publish artifacts.
+- CI/CD: not included yet. See "CI/CD integration" below.
 
 ## Folder structure
 - `test-plans/` JMX files (baseline + templates)
 - `data/` CSV or feeders (sample `sample.csv` included)
 - `reports/` JTL outputs and generated HTML reports (kept empty with .gitkeep)
 - `scripts/` Java runner wrapper (`run-java.sh`)
-- `ci-cd/` Jenkinsfile
-- `.github/workflows/` GitHub Actions workflow
 - `config/environments/` env properties (dev/staging provided, plus `prod.properties.example`)
 - `src/test/` unit tests for suite resolution and CLI argument defaults
 - `docs/` architecture overview (Mermaid diagrams)
@@ -57,8 +53,11 @@ Outputs: `reports/<plan>-<timestamp>.jtl` and `reports/<plan>-<timestamp>-html/`
 - Validate correlations with assertions on both response codes and key payload fields.
 
 ## CI/CD integration
-- **GitHub Actions**: `.github/workflows/jmeter.yml` caches Maven, runs the baseline suite, and uploads JTL/HTML/zip artifacts.
-- **Jenkins**: `ci-cd/Jenkinsfile` runs the baseline suite and archives all generated artifacts.
+No pipeline ships with this repository yet.
+
+When adding one, build and unit-test in CI (`mvn clean verify`) but think twice before generating
+load from a shared CI runner: results are noisy and the runner is not sized for it. Run load from a
+dedicated host and publish `reports/` from there.
 
 ## Best practices
 - Keep tests deterministic: control data with CSVs, set think times explicitly, and avoid hidden retries.
@@ -76,7 +75,7 @@ Outputs: `reports/<plan>-<timestamp>.jtl` and `reports/<plan>-<timestamp>-html/`
 ## Why this boilerplate
 - One-command Java runner with environment-driven configuration, health checks, and deterministic suite resolution.
 - Per-run artifacts (JTL/HTML/zip) ready for CI publishing.
-- Template plans plus baseline, wired for CI (GitHub Actions/Jenkins).
+- Template plans plus a working baseline plan.
 - Optional SMTP reporting; auto-open reports locally for fast feedback.
 
 ## Docs
@@ -86,8 +85,7 @@ Outputs: `reports/<plan>-<timestamp>.jtl` and `reports/<plan>-<timestamp>-html/`
 - License: `LICENSE`
 
 ## After you publish
-- Update the Actions badge with your `OWNER/REPO`.
-- Add GitHub topics: `jmeter`, `performance-testing`, `load-testing`, `java`, `ci-cd`, `jmeter-plugins`.
+- Add GitHub topics: `jmeter`, `performance-testing`, `load-testing`, `java`, `jmeter-plugins`.
 - Consider adding a sample report screenshot in `docs/` for visitors to preview without running.
 
 ## Contributing / Stars
