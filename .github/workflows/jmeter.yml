@@ -1,0 +1,120 @@
+name: JMeter Suite
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and unit test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: maven
+
+      - name: Build and run unit tests
+        run: mvn -B clean verify
+
+      - name: Upload the runnable jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: runner-jar
+          path: target/jmeter-performance-suite-*.jar
+          retention-days: 7
+
+  smoke:
+    name: End-to-end smoke run
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: maven
+
+      - name: Build the runner
+        run: mvn -B -q clean package -DskipTests
+
+      # JMeter's dashboard templates ship with the distribution, not the Maven artifacts, and are
+      # ~3MB of third-party assets, so they are fetched rather than committed.
+      - name: Cache JMeter report templates
+        id: report-template-cache
+        uses: actions/cache@v4
+        with:
+          path: bin/report-template
+          key: jmeter-report-template-5.6.3
+
+      - name: Install JMeter report templates
+        if: steps.report-template-cache.outputs.cache-hit != 'true'
+        run: ./scripts/fetch-report-template.sh
+
+      # Load is generated against a local mock, never a third-party host. A shared runner is not
+      # sized for real load generation, so this proves the pipeline works rather than measuring it.
+      - name: Start the mock target
+        run: |
+          nohup python3 scripts/mock-target.py --port 8099 > mock-target.log 2>&1 &
+          echo "MOCK_PID=$!" >> "$GITHUB_ENV"
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8099/posts >/dev/null; then
+              echo "mock target is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "mock target failed to start" >&2
+          cat mock-target.log >&2 || true
+          exit 1
+
+      - name: Run the baseline plan
+        run: java -Xms256m -Xmx1g -jar target/jmeter-performance-suite-1.0.0.jar ci baseline
+
+      - name: Verify the run produced results and a report
+        run: |
+          set -euo pipefail
+          jtl=$(ls -1 reports/baseline-*.jtl 2>/dev/null | head -1)
+          if [ -z "${jtl:-}" ]; then
+            echo "no JTL produced" >&2
+            exit 1
+          fi
+          samples=$(($(wc -l < "$jtl") - 1))
+          echo "samples: $samples"
+          if [ "$samples" -lt 1 ]; then
+            echo "JTL contains no samples" >&2
+            exit 1
+          fi
+          # The in-process report generator must work without a jmeter binary on PATH.
+          if ! ls -1 reports/baseline-*-html/index.html >/dev/null 2>&1; then
+            echo "no HTML report generated" >&2
+            exit 1
+          fi
+          echo "report generated without a jmeter CLI on PATH"
+
+      - name: Stop the mock target
+        if: always()
+        run: kill "${MOCK_PID}" 2>/dev/null || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jmeter-reports
+          path: |
+            reports/
+            logs/
+          retention-days: 14

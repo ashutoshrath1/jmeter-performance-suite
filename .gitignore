@@ -14,3 +14,10 @@ report-output/
 .idea/
 *.iml
 .vscode/
+
+# Agent/tool metadata
+.serena/
+.ua/
+
+# JMeter report templates - fetched, not vendored (scripts/fetch-report-template.sh)
+bin/report-template/

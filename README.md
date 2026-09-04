@@ -1,23 +1,21 @@
 # JMeter Performance Suite
 
-[![GitHub Actions](https://github.com/OWNER/REPO/actions/workflows/jmeter.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/jmeter.yml) <!-- Update OWNER/REPO after publishing -->
-
-Production-grade JMeter performance test boilerplate with a Java runner, parameterized plans, per-run artifacts, and CI/CD integration.
+JMeter performance test boilerplate with a Java runner, parameterized plans, and per-run artifacts.
 
 ## Overview
 - Baseline plan: `test-plans/baseline.jmx` (provided real test using BlazeMeter Concurrency Thread Group, Throughput Shaping Timer, JSON extractor, and assertions).
 - Templates: spike, stress, endurance, and breakpoint plans with Concurrency Thread Group, load profiles, and working HTTP samplers.
 - Java runner: executes JMX via embedded JMeter + plugin libraries with health checks, report packaging, and optional email delivery.
-- CI/CD: GitHub Actions and Jenkins samples call the Java runner and publish artifacts.
+- CI/CD: not included yet. See "CI/CD integration" below.
 
 ## Folder structure
 - `test-plans/` JMX files (baseline + templates)
-- `data/` CSV or feeders (sample `sample.csv` included)
 - `reports/` JTL outputs and generated HTML reports (kept empty with .gitkeep)
 - `scripts/` Java runner wrapper (`run-java.sh`)
-- `ci-cd/` Jenkinsfile
-- `.github/workflows/` GitHub Actions workflow
-- `config/environments/` env properties (dev/staging provided, plus `prod.properties.example`)
+- `config/environments/` env properties (dev/staging/ci provided, plus `prod.properties.example`)
+- `config/suites.properties` suite groupings (`all`, `quick`, `load`)
+- `bin/` JMeter runtime config; `bin/report-template/` is fetched, not committed
+- `.github/workflows/` CI pipeline
 - `src/test/` unit tests for suite resolution and CLI argument defaults
 - `docs/` architecture overview (Mermaid diagrams)
 
@@ -57,8 +55,82 @@ Outputs: `reports/<plan>-<timestamp>.jtl` and `reports/<plan>-<timestamp>-html/`
 - Validate correlations with assertions on both response codes and key payload fields.
 
 ## CI/CD integration
-- **GitHub Actions**: `.github/workflows/jmeter.yml` caches Maven, runs the baseline suite, and uploads JTL/HTML/zip artifacts.
-- **Jenkins**: `ci-cd/Jenkinsfile` runs the baseline suite and archives all generated artifacts.
+`.github/workflows/jmeter.yml` runs two jobs on every push and pull request:
+
+- **build** — `mvn clean verify` (compile + unit tests), uploading the runnable jar.
+- **smoke** — starts `scripts/mock-target.py` on localhost, runs the baseline plan against it via
+  the `ci` environment, and asserts that a JTL with samples and an HTML report were produced.
+  Results are uploaded as artifacts.
+
+Load is generated against a local mock, never a third-party host. A shared runner is not sized for
+real load generation, so the smoke job proves the pipeline works rather than measuring performance
+— its SLA gates are correctness-only (`p95_response_time_ms=0`, `min_throughput_tps=0`). For real
+numbers, run from a dedicated host and publish `reports/` from there.
+
+## Adding a test plan
+Drop a `.jmx` into `test-plans/`. The id is the filename without the extension and without any
+trailing `-test`, so `soak-test.jmx` becomes `soak` and is immediately runnable:
+
+```
+./scripts/run-java.sh dev soak
+```
+
+To include it in a grouping, add its id to `config/suites.properties`. No code change, no rebuild.
+
+## Tuning load per environment
+Thread groups read `${__P(<plan>.<setting>,<default>)}`, so any environment file can override load
+without touching the JMX:
+
+```
+stress.target_level=250
+stress.hold_time=600
+```
+
+Settings are `target_level`, `ramp_up`, `steps`, and `hold_time`. The JMX default applies when a
+property is unset.
+
+## Trending results
+Each run writes a standalone JTL, which means no cross-run comparison by default. To accumulate
+results into a time series, enable metric streaming in an environment file:
+
+```
+metrics.enabled=true
+metrics.classname=org.apache.jmeter.visualizers.backend.influxdb.InfluxdbBackendListenerClient
+metrics.arg.influxdbUrl=http://localhost:8086/write?db=jmeter
+metrics.arg.application=checkout-api
+```
+
+Every `metrics.arg.*` entry is passed to the backend client verbatim, so Graphite or a custom
+client works the same way. Runs are tagged with the plan and environment.
+
+## HTML reports
+The dashboard needs JMeter's FreeMarker templates, which ship with the JMeter distribution rather
+than the Maven artifacts. Install them once:
+
+```
+./scripts/fetch-report-template.sh
+```
+
+Without them the suite still runs and still enforces its SLA gates; only the HTML dashboard is
+skipped.
+
+## Scaling past one machine
+The runner executes in a single JVM by default, which tops out in the low thousands of threads.
+Beyond that you are measuring the load generator rather than the target. Point the run at remote
+hosts running `jmeter-server`:
+
+```
+remote.hosts=10.0.0.1:1099,10.0.0.2:1099
+server.rmi.ssl.disable=true
+```
+
+Every property in the environment file is forwarded to the remote engines, so `host`, `port` and
+the per-plan load settings apply there too. Results still stream back to this machine and land in
+`reports/` as usual.
+
+Note that the remote hosts need any JMeter plugins your plan uses. `test-plans/smoke.jmx` uses only
+built-in elements, so it runs against a stock `jmeter-server` with nothing extra installed; the
+other plans need the BlazeMeter plugins.
 
 ## Best practices
 - Keep tests deterministic: control data with CSVs, set think times explicitly, and avoid hidden retries.
@@ -76,7 +148,7 @@ Outputs: `reports/<plan>-<timestamp>.jtl` and `reports/<plan>-<timestamp>-html/`
 ## Why this boilerplate
 - One-command Java runner with environment-driven configuration, health checks, and deterministic suite resolution.
 - Per-run artifacts (JTL/HTML/zip) ready for CI publishing.
-- Template plans plus baseline, wired for CI (GitHub Actions/Jenkins).
+- Template plans plus a working baseline plan.
 - Optional SMTP reporting; auto-open reports locally for fast feedback.
 
 ## Docs
@@ -86,8 +158,7 @@ Outputs: `reports/<plan>-<timestamp>.jtl` and `reports/<plan>-<timestamp>-html/`
 - License: `LICENSE`
 
 ## After you publish
-- Update the Actions badge with your `OWNER/REPO`.
-- Add GitHub topics: `jmeter`, `performance-testing`, `load-testing`, `java`, `ci-cd`, `jmeter-plugins`.
+- Add GitHub topics: `jmeter`, `performance-testing`, `load-testing`, `java`, `jmeter-plugins`.
 - Consider adding a sample report screenshot in `docs/` for visitors to preview without running.
 
 ## Contributing / Stars

@@ -31,4 +31,13 @@ if [ ! -f "$JAR_PATH" ]; then
   exit 1
 fi
 
-java -jar "$JAR_PATH" "$ENVIRONMENT" "$SUITE"
+# Heap sizing. The engine, the sample buffers and the HTML report generator all share this
+# JVM, so the default heap is the first thing to run out under a large plan. Override with
+# JVM_ARGS to tune further (e.g. JVM_ARGS="-Xmx4g -XX:+UseG1GC").
+HEAP_SIZE=${HEAP_SIZE:-2g}
+NEW_SIZE=${NEW_SIZE:-512m}
+JVM_ARGS=${JVM_ARGS:--Xms${NEW_SIZE} -Xmx${HEAP_SIZE}}
+
+echo "JVM args: $JVM_ARGS"
+# shellcheck disable=SC2086
+java $JVM_ARGS -jar "$JAR_PATH" "$ENVIRONMENT" "$SUITE"
