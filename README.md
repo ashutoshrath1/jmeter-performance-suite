@@ -114,6 +114,24 @@ than the Maven artifacts. Install them once:
 Without them the suite still runs and still enforces its SLA gates; only the HTML dashboard is
 skipped.
 
+## Scaling past one machine
+The runner executes in a single JVM by default, which tops out in the low thousands of threads.
+Beyond that you are measuring the load generator rather than the target. Point the run at remote
+hosts running `jmeter-server`:
+
+```
+remote.hosts=10.0.0.1:1099,10.0.0.2:1099
+server.rmi.ssl.disable=true
+```
+
+Every property in the environment file is forwarded to the remote engines, so `host`, `port` and
+the per-plan load settings apply there too. Results still stream back to this machine and land in
+`reports/` as usual.
+
+Note that the remote hosts need any JMeter plugins your plan uses. `test-plans/smoke.jmx` uses only
+built-in elements, so it runs against a stock `jmeter-server` with nothing extra installed; the
+other plans need the BlazeMeter plugins.
+
 ## Best practices
 - Keep tests deterministic: control data with CSVs, set think times explicitly, and avoid hidden retries.
 - Warm up systems before measuring steady-state metrics.

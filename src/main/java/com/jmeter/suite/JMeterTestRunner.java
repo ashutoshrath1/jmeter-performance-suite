@@ -2,26 +2,18 @@ package com.jmeter.suite;
 
 import com.jmeter.suite.config.EnvironmentConfig;
 import com.jmeter.suite.config.RunnerArgs;
+import com.jmeter.suite.health.HealthChecker;
 import com.jmeter.suite.metrics.BackendListenerFactory;
 import com.jmeter.suite.model.PlanDefinition;
 import com.jmeter.suite.model.PlanRegistry;
 import com.jmeter.suite.report.ExecutionStats;
 import com.jmeter.suite.report.JtlAnalyzer;
 import com.jmeter.suite.report.ReportArtifactPaths;
-import jakarta.mail.Authenticator;
-import jakarta.mail.Message;
-import jakarta.mail.PasswordAuthentication;
-import jakarta.mail.Session;
-import jakarta.mail.Transport;
-import jakarta.mail.internet.InternetAddress;
-import jakarta.mail.internet.MimeBodyPart;
-import jakarta.mail.internet.MimeMessage;
-import jakarta.mail.internet.MimeMultipart;
-import org.apache.http.client.config.RequestConfig;
-import org.apache.http.client.methods.CloseableHttpResponse;
-import org.apache.http.client.methods.HttpGet;
-import org.apache.http.impl.client.CloseableHttpClient;
-import org.apache.http.impl.client.HttpClients;
+import com.jmeter.suite.report.ReportPublisher;
+import com.jmeter.suite.runtime.DistributedTestRunner;
+import com.jmeter.suite.runtime.JMeterRuntime;
+import com.jmeter.suite.util.FileOps;
+import com.jmeter.suite.util.Log;
 import org.apache.jmeter.engine.StandardJMeterEngine;
 import org.apache.jmeter.protocol.http.sampler.HTTPSamplerProxy;
 import org.apache.jmeter.report.dashboard.ReportGenerator;
@@ -38,26 +30,22 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Properties;
 import java.util.stream.Collectors;
 
 /**
- * Orchestrates end-to-end execution of configured JMeter plans, including setup,
- * health checks, plan runs, and report generation for the selected suite.
+ * Orchestrates end-to-end execution of configured JMeter plans: setup, health check, plan
+ * execution, result analysis, and reporting.
  */
 public class JMeterTestRunner {
 
-    private static final String JMETER_PROPERTIES = "config/jmeter.properties";
     private static final String REPORTS_DIR = "reports";
     private static final String LOGS_DIR = "logs";
-    private static final DateTimeFormatter LOG_TS = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private final RunnerArgs runnerArgs;
     private EnvironmentConfig environmentConfig;
+    private ReportPublisher reportPublisher;
 
     /**
      * Creates a runner bound to parsed command-line arguments.
@@ -72,8 +60,7 @@ public class JMeterTestRunner {
     public static void main(String[] args) {
         System.setProperty("org.apache.logging.log4j.simplelog.StatusLogger.level", "OFF");
         System.setProperty("log4j2.statusLoggerLevel", "OFF");
-        RunnerArgs runnerArgs = RunnerArgs.from(args);
-        JMeterTestRunner runner = new JMeterTestRunner(runnerArgs);
+        JMeterTestRunner runner = new JMeterTestRunner(RunnerArgs.from(args));
 
         try {
             System.exit(runner.run());
@@ -89,25 +76,27 @@ public class JMeterTestRunner {
      */
     public int run() throws Exception {
         createWorkingDirs();
-        initJMeter();
+        JMeterRuntime.initialize();
+
         environmentConfig = EnvironmentConfig.load(runnerArgs.environment());
         environmentConfig.pushToJMeter();
+        reportPublisher = new ReportPublisher(environmentConfig);
 
         PlanRegistry planRegistry = PlanRegistry.load();
         List<PlanDefinition> plans = planRegistry.resolveSuite(runnerArgs.suite());
         if (plans.isEmpty()) {
-            info("Unknown suite: " + runnerArgs.suite());
-            info("Available suites: " + planRegistry.supportedSuites());
+            Log.info("Unknown suite: " + runnerArgs.suite());
+            Log.info("Available suites: " + planRegistry.supportedSuites());
             return 1;
         }
 
-        info("JMeter Performance Suite - Java Runner");
-        info("Environment: " + environmentConfig.name());
-        info("Suite: " + runnerArgs.suite());
-        info("Plans: " + plans.stream().map(PlanDefinition::id).collect(Collectors.toList()));
+        Log.info("JMeter Performance Suite - Java Runner");
+        Log.info("Environment: " + environmentConfig.name());
+        Log.info("Suite: " + runnerArgs.suite());
+        Log.info("Plans: " + plans.stream().map(PlanDefinition::id).collect(Collectors.toList()));
 
-        if (!performHealthCheck()) {
-            info("Health check failed - aborting");
+        if (!new HealthChecker(environmentConfig).check()) {
+            Log.info("Health check failed - aborting");
             return 1;
         }
 
@@ -118,9 +107,11 @@ public class JMeterTestRunner {
             }
         }
 
-        info("Summary: total=" + plans.size() + ", passed=" + (plans.size() - failures.size()) + ", failed=" + failures.size());
+        Log.info("Summary: total=" + plans.size()
+                + ", passed=" + (plans.size() - failures.size())
+                + ", failed=" + failures.size());
         if (!failures.isEmpty()) {
-            info("Failed: " + failures);
+            Log.info("Failed: " + failures);
         }
         return failures.isEmpty() ? 0 : 1;
     }
@@ -134,117 +125,12 @@ public class JMeterTestRunner {
     }
 
     /**
-     * Initializes JMeter runtime properties, logging, and save-service defaults.
-     */
-    private void initJMeter() throws IOException {
-        String log4jConfig = Paths.get("bin", "log4j2.xml").toAbsolutePath().normalize().toString();
-        String jmeterLogFile = Paths.get(LOGS_DIR, "jmeter.log").toString();
-        System.setProperty("log4j2.configurationFile", log4jConfig);
-        System.setProperty("log4j.configurationFile", log4jConfig);
-        System.setProperty("log4j2.statusLevel", "error");
-        System.setProperty("log4j2.disable.jmx", "true");
-        System.setProperty("log_file", jmeterLogFile);
-        System.setProperty("jmeter.logfile", jmeterLogFile);
-
-        Path jmeterProps = Paths.get(JMETER_PROPERTIES);
-        if (!Files.exists(jmeterProps)) {
-            throw new IllegalStateException("Missing JMeter properties: " + JMETER_PROPERTIES);
-        }
-
-        JMeterUtils.setJMeterHome(Paths.get(".").toAbsolutePath().normalize().toString());
-        JMeterUtils.loadJMeterProperties(jmeterProps.toString());
-        JMeterUtils.setProperty("log_file", jmeterLogFile);
-        registerFunctionSearchPath();
-        ensureReportDefaults();
-        JMeterUtils.initLocale();
-        SaveService.loadProperties();
-    }
-
-    /**
-     * Points JMeter's function scanner at this executable so {@code ${__...}} calls resolve.
-     *
-     * <p>JMeter discovers {@code Function} implementations by scanning {@code search_paths} plus
-     * {@code $JMETER_HOME/lib/ext}. An embedded runner has no {@code lib/ext}, so without this the
-     * registry comes up empty and every function - {@code __P}, {@code __property}, {@code __time} -
-     * is silently left in the test plan as literal text.
-     */
-    private void registerFunctionSearchPath() {
-        try {
-            Path self = Paths.get(JMeterTestRunner.class.getProtectionDomain()
-                    .getCodeSource().getLocation().toURI());
-            String existing = JMeterUtils.getPropDefault("search_paths", "");
-            String updated = existing.isEmpty()
-                    ? self.toAbsolutePath().toString()
-                    : existing + ";" + self.toAbsolutePath();
-            JMeterUtils.setProperty("search_paths", updated);
-        } catch (Exception ex) {
-            info("Warning: could not register function search path: " + ex.getMessage());
-        }
-    }
-
-    /**
-     * Applies report thresholds when they are missing from active properties.
-     */
-    private void ensureReportDefaults() {
-        setIfMissing("jmeter.reportgenerator.apdex_satisfied_threshold", "500");
-        setIfMissing("jmeter.reportgenerator.apdex_tolerated_threshold", "1500");
-    }
-
-    /**
-     * Sets a JMeter property only when the current value is absent or unresolved.
-     */
-    private void setIfMissing(String key, String defaultValue) {
-        String current = JMeterUtils.getProperty(key);
-        if (current == null || current.trim().isEmpty() || current.contains("${")) {
-            JMeterUtils.setProperty(key, defaultValue);
-        }
-    }
-
-    /**
-     * Performs an optional pre-run health check against the configured target endpoint.
-     */
-    private boolean performHealthCheck() {
-        String skipHealthCheck = System.getenv("SKIP_HEALTH_CHECK");
-        if (skipHealthCheck != null && Boolean.parseBoolean(skipHealthCheck)) {
-            info("Health check disabled via SKIP_HEALTH_CHECK environment variable.");
-            return true;
-        }
-
-        if (!environmentConfig.healthCheckEnabled()) {
-            info("Health check disabled for environment: " + environmentConfig.name());
-            return true;
-        }
-
-        String url = environmentConfig.baseUrl() + environmentConfig.healthPath();
-        int timeoutMs = environmentConfig.healthTimeoutMs();
-        info("Health check: GET " + url + " (timeout=" + timeoutMs + "ms)");
-
-        RequestConfig requestConfig = RequestConfig.custom()
-                .setConnectTimeout(timeoutMs)
-                .setConnectionRequestTimeout(timeoutMs)
-                .setSocketTimeout(timeoutMs)
-                .build();
-
-        try (CloseableHttpClient client = HttpClients.custom().setDefaultRequestConfig(requestConfig).build()) {
-            HttpGet get = new HttpGet(url);
-            try (CloseableHttpResponse response = client.execute(get)) {
-                int status = response.getStatusLine().getStatusCode();
-                info("Health check response: HTTP " + status);
-                return status >= 200 && status < 300;
-            }
-        } catch (IOException ex) {
-            info("Health check failed: " + ex.getMessage());
-            return false;
-        }
-    }
-
-    /**
-     * Runs a single JMeter plan and evaluates pass/fail using sample and error thresholds.
+     * Runs a single JMeter plan and evaluates it against the environment's SLA gates.
      */
     private boolean runPlan(PlanDefinition plan) {
         Path jmxPath = plan.jmxPath();
         if (!Files.exists(jmxPath)) {
-            info("Missing JMX: " + jmxPath);
+            Log.info("Missing JMX: " + jmxPath);
             return false;
         }
 
@@ -252,67 +138,51 @@ public class JMeterTestRunner {
         try {
             prepareOutputPaths(artifacts);
         } catch (IOException ex) {
-            info("Could not prepare output directories: " + ex.getMessage());
+            Log.info("Could not prepare output directories: " + ex.getMessage());
             return false;
         }
 
-        info("Running plan: " + plan.id() + " (" + jmxPath + ")");
+        Log.info("Running plan: " + plan.id() + " (" + jmxPath + ")");
         Instant start = Instant.now();
 
         try {
-            StandardJMeterEngine engine = new StandardJMeterEngine();
             HashTree testPlanTree = SaveService.loadTree(jmxPath.toFile());
-
             applyEnvironmentOverrides(testPlanTree);
             removeResultCollectors(testPlanTree);
-            ResultCollector collector = createCollector(artifacts.jtlPath());
-            testPlanTree.add(testPlanTree.getArray()[0], collector);
+            testPlanTree.add(testPlanTree.getArray()[0], createCollector(artifacts.jtlPath()));
 
             BackendListenerFactory.create(environmentConfig, plan.id()).ifPresent(listener -> {
                 testPlanTree.add(testPlanTree.getArray()[0], listener);
-                info("Streaming metrics via " + listener.getClassname());
+                Log.info("Streaming metrics via " + listener.getClassname());
             });
 
-            engine.configure(testPlanTree);
-            engine.run();
+            List<String> remoteHosts = environmentConfig.remoteHosts();
+            if (remoteHosts.isEmpty()) {
+                StandardJMeterEngine engine = new StandardJMeterEngine();
+                engine.configure(testPlanTree);
+                engine.run();
+            } else {
+                DistributedTestRunner.run(testPlanTree, remoteHosts, environmentConfig.asProperties());
+            }
 
             // Report rendering is presentation, not result. A plan passes or fails on its SLA
-            // gates; losing the HTML dashboard (missing report templates, for instance) must not
-            // turn a healthy run into a failure. The JTL and the stats below are the real output.
+            // gates; losing the HTML dashboard must not turn a healthy run into a failure.
             boolean reported = tryGenerateReport(plan, artifacts);
             ExecutionStats stats = JtlAnalyzer.analyze(artifacts.jtlPath());
 
-            Duration duration = Duration.between(start, Instant.now());
-            info("Completed: " + plan.id() + " in " + duration.toSeconds() + "s");
-            info("Results: " + artifacts.jtlPath()
+            Log.info("Completed: " + plan.id() + " in "
+                    + Duration.between(start, Instant.now()).getSeconds() + "s");
+            Log.info("Results: " + artifacts.jtlPath()
                     + (reported ? ", HTML: " + artifacts.htmlDir() : ", HTML: not generated"));
-            info("Execution stats: samples=" + stats.sampleCount() + ", errors=" + stats.errorCount() +
-                    ", errorRate=" + String.format("%.2f", stats.errorRatePercent()) + "%" +
-                    ", p95=" + stats.p95ResponseTimeMs() + "ms" +
-                    ", throughput=" + String.format("%.2f", stats.throughputTps()) + "/s");
+            Log.info("Execution stats: samples=" + stats.sampleCount()
+                    + ", errors=" + stats.errorCount()
+                    + ", errorRate=" + String.format("%.2f", stats.errorRatePercent()) + "%"
+                    + ", p95=" + stats.p95ResponseTimeMs() + "ms"
+                    + ", throughput=" + String.format("%.2f", stats.throughputTps()) + "/s");
 
             return evaluateThresholds(plan, stats);
         } catch (Exception ex) {
-            info("Failed: " + plan.id() + " due to " + ex.getMessage());
-            return false;
-        }
-    }
-
-    /**
-     * Generates the HTML report, reporting failure without aborting the plan.
-     *
-     * <p>HTML generation needs JMeter's FreeMarker templates in {@code bin/report-template}, which
-     * ship with the JMeter distribution rather than with this runner. When they are absent the run
-     * itself is still perfectly valid, so this degrades to a warning and points at the fix.
-     */
-    private boolean tryGenerateReport(PlanDefinition plan, ReportArtifactPaths artifacts) {
-        try {
-            generateReport(plan, artifacts);
-            return true;
-        } catch (Exception ex) {
-            info("HTML report not generated for " + plan.id() + ": " + ex.getMessage());
-            info("Run scripts/fetch-report-template.sh to install JMeter's report templates. "
-                    + "The JTL results and the metrics below are unaffected.");
+            Log.info("Failed: " + plan.id() + " due to " + ex.getMessage());
             return false;
         }
     }
@@ -322,27 +192,29 @@ public class JMeterTestRunner {
      */
     private boolean evaluateThresholds(PlanDefinition plan, ExecutionStats stats) {
         if (stats.sampleCount() == 0) {
-            info("Failed: " + plan.id() + " produced zero samples.");
+            Log.info("Failed: " + plan.id() + " produced zero samples.");
             return false;
         }
 
         double maxErrorRate = environmentConfig.maxErrorRatePercent();
         if (stats.errorRatePercent() > maxErrorRate) {
-            info("Failed: " + plan.id() + " error rate " + String.format("%.2f", stats.errorRatePercent())
+            Log.info("Failed: " + plan.id() + " error rate "
+                    + String.format("%.2f", stats.errorRatePercent())
                     + "% exceeded max_error_rate_percent=" + maxErrorRate);
             return false;
         }
 
         long p95Budget = environmentConfig.p95ResponseTimeMs();
         if (p95Budget > 0 && stats.p95ResponseTimeMs() > p95Budget) {
-            info("Failed: " + plan.id() + " p95 " + stats.p95ResponseTimeMs()
+            Log.info("Failed: " + plan.id() + " p95 " + stats.p95ResponseTimeMs()
                     + "ms exceeded budget of " + p95Budget + "ms");
             return false;
         }
 
         double minThroughput = environmentConfig.minThroughputTps();
         if (minThroughput > 0 && stats.throughputTps() < minThroughput) {
-            info("Failed: " + plan.id() + " throughput " + String.format("%.2f", stats.throughputTps())
+            Log.info("Failed: " + plan.id() + " throughput "
+                    + String.format("%.2f", stats.throughputTps())
                     + "/s below min_throughput_tps=" + minThroughput);
             return false;
         }
@@ -351,11 +223,10 @@ public class JMeterTestRunner {
     }
 
     /**
-     * Creates a non-appending collector that writes samples to the given JTL path.
+     * Creates a non-appending collector that streams samples to the given JTL path.
      */
     private ResultCollector createCollector(Path jtlPath) {
-        Summariser summariser = new Summariser("summary");
-        ResultCollector collector = new ResultCollector(summariser);
+        ResultCollector collector = new ResultCollector(new Summariser("summary"));
         collector.setProperty("ResultCollector.append", false);
         collector.setFilename(jtlPath.toString());
         return collector;
@@ -373,202 +244,58 @@ public class JMeterTestRunner {
     }
 
     /**
-     * Cleans old artifacts and prepares empty output locations for the current run.
+     * Clears any stale artifacts and prepares empty output locations for the current run.
      */
     private void prepareOutputPaths(ReportArtifactPaths artifacts) throws IOException {
         Files.deleteIfExists(artifacts.jtlPath());
-        deleteDir(artifacts.htmlDir());
+        FileOps.deleteDir(artifacts.htmlDir());
         Files.deleteIfExists(artifacts.zipPath());
-        deleteDir(Paths.get("report-output"));
+        FileOps.deleteDir(Paths.get("report-output"));
         Files.createDirectories(artifacts.htmlDir());
     }
 
     /**
-     * Generates HTML report artifacts for a completed plan with CLI fallback support.
+     * Generates the HTML report, reporting failure without aborting the plan.
      *
-     * <p>The collector is deliberately not passed to {@link ReportGenerator}: supplying one selects
-     * JMeter's live-generation path, which requires the JTL to still be empty and therefore always
-     * fails here, forcing a shell-out to a {@code jmeter} binary that need not exist. Passing null
-     * generates from the completed results file, which is what we want.
+     * <p>HTML generation needs JMeter's FreeMarker templates in {@code bin/report-template}, which
+     * ship with the JMeter distribution rather than with this runner. When they are absent the run
+     * itself is still perfectly valid, so this degrades to a warning and points at the fix.
      */
-    private void generateReport(PlanDefinition plan, ReportArtifactPaths artifacts) throws Exception {
-        JMeterUtils.setProperty("report.output.dir", artifacts.htmlDir().toString());
-        JMeterUtils.setProperty("jmeter.reportgenerator.exporter.html.property.output_dir", artifacts.htmlDir().toString());
-        JMeterUtils.setProperty("jmeter.reportgenerator.temp_dir", artifacts.htmlDir().resolve("temp").toString());
-
+    private boolean tryGenerateReport(PlanDefinition plan, ReportArtifactPaths artifacts) {
         try {
-            ReportGenerator generator = new ReportGenerator(artifacts.jtlPath().toString(), null);
-            generator.generate();
-            postProcessReport(plan, artifacts);
-        } catch (Exception primary) {
-            info("Primary HTML generation failed: " + primary.getMessage());
-            if (tryCliReport(artifacts.jtlPath(), artifacts.htmlDir())) {
-                info("Generated report via CLI fallback.");
-                postProcessReport(plan, artifacts);
-                return;
-            }
-            throw primary;
-        }
-    }
-
-    /**
-     * Attempts HTML report generation through the JMeter CLI as a fallback path.
-     */
-    private boolean tryCliReport(Path jtlPath, Path htmlDir) {
-        try {
-            ProcessBuilder pb = new ProcessBuilder("jmeter", "-g", jtlPath.toString(), "-o", htmlDir.toString());
-            pb.directory(Paths.get(".").toFile());
-            pb.redirectErrorStream(true);
-            Process process = pb.start();
-            return process.waitFor() == 0;
+            generateReport(artifacts);
+            reportPublisher.publish(plan.id(), artifacts);
+            return true;
         } catch (Exception ex) {
-            info("CLI fallback failed: " + ex.getMessage());
+            Log.info("HTML report not generated for " + plan.id() + ": " + ex.getMessage());
+            Log.info("Run scripts/fetch-report-template.sh to install JMeter's report templates. "
+                    + "The JTL results and the metrics below are unaffected.");
             return false;
         }
     }
 
     /**
-     * Handles post-report steps such as zipping, email delivery, and browser opening.
+     * Renders the HTML dashboard from the completed results file.
+     *
+     * <p>The collector is deliberately not passed to {@link ReportGenerator}: supplying one selects
+     * JMeter's live-generation path, which requires the JTL to still be empty and therefore always
+     * fails here. Passing null generates from the completed results file, which is what we want.
      */
-    private void postProcessReport(PlanDefinition plan, ReportArtifactPaths artifacts) {
-        boolean isCi = Boolean.parseBoolean(System.getenv().getOrDefault("CI", "false"));
-        try {
-            zipDirectory(artifacts.htmlDir(), artifacts.zipPath());
-            info("Report archive created: " + artifacts.zipPath());
-        } catch (Exception ex) {
-            info("Failed to archive report: " + ex.getMessage());
-        }
+    private void generateReport(ReportArtifactPaths artifacts) throws Exception {
+        JMeterUtils.setProperty("report.output.dir", artifacts.htmlDir().toString());
+        JMeterUtils.setProperty("jmeter.reportgenerator.exporter.html.property.output_dir",
+                artifacts.htmlDir().toString());
+        JMeterUtils.setProperty("jmeter.reportgenerator.temp_dir",
+                artifacts.htmlDir().resolve("temp").toString());
 
-        sendEmailIfConfigured(plan.id(), artifacts);
-
-        if (!isCi && environmentConfig.autoOpenReports()) {
-            openInBrowser(artifacts.htmlDir().resolve("index.html"));
-        } else {
-            info("Auto-open disabled or CI detected; report available at " + artifacts.htmlDir());
-        }
+        new ReportGenerator(artifacts.jtlPath().toString(), null).generate();
     }
 
     /**
-     * Sends the generated report archive when SMTP environment settings are provided.
-     */
-    private void sendEmailIfConfigured(String planName, ReportArtifactPaths artifacts) {
-        String smtpHost = env("SMTP_HOST");
-        String to = env("SMTP_TO");
-        if (smtpHost == null || to == null) {
-            info("Email skipped: SMTP_HOST/SMTP_TO not set.");
-            return;
-        }
-
-        Properties props = new Properties();
-        String smtpPort = env("SMTP_PORT", "587");
-        String smtpUser = env("SMTP_USER");
-        String smtpPass = env("SMTP_PASS");
-
-        props.put("mail.smtp.host", smtpHost);
-        props.put("mail.smtp.port", smtpPort);
-        props.put("mail.smtp.starttls.enable", env("SMTP_STARTTLS", "true"));
-        props.put("mail.smtp.auth", smtpUser != null ? "true" : "false");
-
-        Session session = buildMailSession(props, smtpUser, smtpPass);
-
-        try {
-            String from = env("SMTP_FROM", smtpUser != null ? smtpUser : "jmeter@localhost");
-            MimeMessage message = new MimeMessage(session);
-            message.setFrom(new InternetAddress(from));
-            for (String addr : to.split(",")) {
-                if (!addr.trim().isEmpty()) {
-                    message.addRecipient(Message.RecipientType.TO, new InternetAddress(addr.trim()));
-                }
-            }
-            message.setSubject("JMeter report: " + planName);
-
-            MimeBodyPart textPart = new MimeBodyPart();
-            textPart.setText("Attached: JMeter report for plan '" + planName + "'.\n" +
-                    "JTL: " + artifacts.jtlPath().toAbsolutePath() + "\n" +
-                    "HTML: " + artifacts.htmlDir().toAbsolutePath() + "\n");
-
-            MimeMultipart multipart = new MimeMultipart();
-            multipart.addBodyPart(textPart);
-
-            if (Files.exists(artifacts.zipPath())) {
-                MimeBodyPart attachment = new MimeBodyPart();
-                attachment.attachFile(artifacts.zipPath().toFile());
-                attachment.setFileName(artifacts.zipPath().getFileName().toString());
-                multipart.addBodyPart(attachment);
-            }
-
-            message.setContent(multipart);
-            Transport.send(message);
-            info("Email sent to: " + to);
-        } catch (Exception ex) {
-            info("Email send failed: " + ex.getMessage());
-        }
-    }
-
-    /**
-     * Builds a mail session with optional SMTP authentication.
-     */
-    private Session buildMailSession(Properties props, String smtpUser, String smtpPass) {
-        if (smtpUser != null && smtpPass != null) {
-            return Session.getInstance(props, new Authenticator() {
-                @Override
-                protected PasswordAuthentication getPasswordAuthentication() {
-                    return new PasswordAuthentication(smtpUser, smtpPass);
-                }
-            });
-        }
-        return Session.getInstance(props);
-    }
-
-    /**
-     * Opens the HTML report index in the default system browser.
-     */
-    private void openInBrowser(Path indexHtml) {
-        try {
-            if (!Files.exists(indexHtml)) {
-                info("Report index not found: " + indexHtml);
-                return;
-            }
-
-            String command = isMac() ? "open" : "xdg-open";
-            new ProcessBuilder(command, indexHtml.toAbsolutePath().toString()).start();
-            info("Opened report in browser: " + indexHtml);
-        } catch (Exception ex) {
-            info("Unable to open browser automatically: " + ex.getMessage());
-        }
-    }
-
-    /**
-     * Detects whether the current operating system is macOS.
-     */
-    private boolean isMac() {
-        return System.getProperty("os.name", "").toLowerCase().contains("mac");
-    }
-
-    /**
-     * Archives all files under a directory into a zip file.
-     */
-    private void zipDirectory(Path sourceDir, Path zipFile) throws IOException {
-        try (java.util.zip.ZipOutputStream zos = new java.util.zip.ZipOutputStream(Files.newOutputStream(zipFile))) {
-            Files.walk(sourceDir)
-                    .filter(path -> !Files.isDirectory(path))
-                    .forEach(path -> {
-                        java.util.zip.ZipEntry zipEntry = new java.util.zip.ZipEntry(sourceDir.relativize(path).toString());
-                        try {
-                            zos.putNextEntry(zipEntry);
-                            Files.copy(path, zos);
-                            zos.closeEntry();
-                        } catch (IOException ex) {
-                            throw new java.io.UncheckedIOException(ex);
-                        }
-                    });
-        } catch (java.io.UncheckedIOException ex) {
-            throw ex.getCause();
-        }
-    }
-
-    /**
-     * Recursively removes existing result collectors from a loaded test tree.
+     * Recursively removes result collectors declared inside a loaded test tree.
+     *
+     * <p>Plans carry their own listeners for GUI use; the runner replaces them with a single
+     * collector so every run writes exactly one JTL to a known path.
      */
     private void removeResultCollectors(HashTree tree) {
         List<Object> toRemove = new ArrayList<>();
@@ -587,9 +314,8 @@ public class JMeterTestRunner {
      * Recursively applies configured host and protocol overrides to HTTP samplers.
      *
      * <p>Samplers whose domain or protocol already reference a variable or property (for example
-     * {@code ${host}}) are left untouched, so a plan can target more than one host by declaring its
-     * own variables. Only literal values are rewritten, which preserves the previous behaviour for
-     * plans that hardcode a domain.
+     * {@code ${host}}) are left untouched, so a plan can target more than one host. Only literal
+     * values are rewritten, which preserves the behaviour of plans that hardcode a domain.
      */
     private void applyEnvironmentOverrides(HashTree tree) {
         for (Object key : tree.keySet()) {
@@ -616,45 +342,4 @@ public class JMeterTestRunner {
     private boolean isLiteral(String value) {
         return value == null || value.trim().isEmpty() || !value.contains("${");
     }
-
-    /**
-     * Deletes a directory tree using best-effort cleanup semantics.
-     */
-    private void deleteDir(Path dir) throws IOException {
-        if (!Files.exists(dir)) {
-            return;
-        }
-        Files.walk(dir)
-                .sorted((a, b) -> b.compareTo(a))
-                .forEach(path -> {
-                    try {
-                        Files.deleteIfExists(path);
-                    } catch (IOException ignored) {
-                        // best-effort cleanup of generated artifacts
-                    }
-                });
-    }
-
-    /**
-     * Returns an environment variable value or null when undefined.
-     */
-    private String env(String key) {
-        return System.getenv(key);
-    }
-
-    /**
-     * Returns an environment variable value with a default fallback.
-     */
-    private String env(String key, String defaultValue) {
-        String value = System.getenv(key);
-        return value != null ? value : defaultValue;
-    }
-
-    /**
-     * Logs a timestamped informational message to standard output.
-     */
-    private void info(String message) {
-        System.out.println("[" + LOG_TS.format(LocalDateTime.now()) + "] " + message);
-    }
-
 }

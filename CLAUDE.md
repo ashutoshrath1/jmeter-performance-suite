@@ -37,6 +37,9 @@ Key classes (`src/main/java/com/jmeter/suite/`):
 - `config/RunnerArgs` — parses/defaults CLI args (environment, suite, health-check flag).
 - `model/PlanRegistry` — discovers `test-plans/*.jmx` and resolves suite names using `config/suites.properties`. Plan ids come from the filename minus the extension and any trailing `-test`. Adding a plan needs no code change.
 - `model/PlanDefinition` — a plan's id plus its JMX path.
+- `runtime/JMeterRuntime` — embedded-JMeter bootstrap: home, logging, function registry, save service.
+- `runtime/DistributedTestRunner` — runs a plan across `remote.hosts`. The completion listener must be a serializable `TestElement` (the whole tree is marshalled over RMI) and `Remoteable` (so the callback stays client-side); environment properties are passed as remote properties or the hosts resolve their own defaults.
+- `health/HealthChecker`, `report/ReportPublisher`, `notify/ReportMailer`, `util/FileOps`, `util/Log` — extracted from the runner, which is now orchestration only.
 - `metrics/BackendListenerFactory` — builds a `BackendListener` from `metrics.*` environment properties so runs can stream into a time-series backend. Backend-agnostic: `metrics.arg.*` is passed to the client verbatim. Off unless `metrics.enabled=true`.
 - `report/ReportArtifactPaths` — computes per-run JTL/HTML/zip paths under `reports/`.
 - `report/JtlAnalyzer` + `report/ExecutionStats` — parse the JTL (columns resolved by header name, RFC4180 quoting) into sample/error counts, p95 latency, and throughput. Never split JTL lines on bare commas; JMeter quotes fields that contain them.

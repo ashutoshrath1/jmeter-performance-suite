@@ -7,10 +7,14 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
+import java.util.stream.Collectors;
 
 /**
  * Loads and exposes environment-specific settings for a test run.
@@ -179,6 +183,36 @@ public final class EnvironmentConfig {
      */
     public double minThroughputTps() {
         return Double.parseDouble(get("min_throughput_tps", "0"));
+    }
+
+    /**
+     * Returns the remote JMeter server hosts for distributed execution, empty when running locally.
+     *
+     * <p>Each entry is {@code host} or {@code host:port}, matching JMeter's own {@code remote_hosts}
+     * format. When empty the plan runs in this JVM.
+     */
+    public List<String> remoteHosts() {
+        String raw = get("remote.hosts", "");
+        if (raw.trim().isEmpty()) {
+            return Collections.emptyList();
+        }
+        return Arrays.stream(raw.split(","))
+                .map(String::trim)
+                .filter(host -> !host.isEmpty())
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Returns a defensive copy of every loaded property.
+     *
+     * <p>Needed for distributed runs: properties set on this JVM are local to it, so the remote
+     * engines must be handed the same set explicitly or {@code ${__P(...)}} resolves to defaults
+     * there and the hosts quietly test the wrong target.
+     */
+    public Properties asProperties() {
+        Properties copy = new Properties();
+        copy.putAll(properties);
+        return copy;
     }
 
     /**
