@@ -23,3 +23,12 @@ baseline.hold_time=300
 p95_response_time_ms=1000
 max_error_rate_percent=0.1
 min_throughput_tps=20
+
+# Metric streaming. Off by default. When enabled, samples stream to a time-series backend
+# during the run so results accumulate into a trend instead of being one-off files.
+# metrics.arg.* entries are passed through to the client verbatim.
+#metrics.enabled=true
+#metrics.classname=org.apache.jmeter.visualizers.backend.influxdb.InfluxdbBackendListenerClient
+#metrics.queue.size=5000
+#metrics.arg.influxdbUrl=http://localhost:8086/write?db=jmeter
+#metrics.arg.application=jmeter-performance-suite

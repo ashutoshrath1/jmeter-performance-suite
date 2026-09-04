@@ -33,7 +33,9 @@ class PlanParameterizationTest {
     /**
      * Reads a plan file as text.
      */
-    private String readPlan(PlanDefinition plan) throws IOException {
+    private String readPlan(String planId) throws IOException {
+        PlanDefinition plan = PlanRegistry.load().byId(planId)
+                .orElseThrow(() -> new AssertionError("no such plan: " + planId));
         Path path = plan.jmxPath();
         assertTrue(Files.exists(path), "missing plan file: " + path);
         return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
@@ -41,15 +43,15 @@ class PlanParameterizationTest {
 
     @ParameterizedTest
     @CsvSource({
-            "BASELINE,   baseline,   50,  30,  5,  120",
-            "SPIKE,      spike,      200, 10,  5,  60",
-            "STRESS,     stress,     100, 60,  10, 300",
-            "ENDURANCE,  endurance,  50,  60,  5,  1800",
-            "BREAKPOINT, breakpoint, 300, 600, 30, 60",
+            "baseline,   50,  30,  5,  120",
+            "spike,      200, 10,  5,  60",
+            "stress,     100, 60,  10, 300",
+            "endurance,  50,  60,  5,  1800",
+            "breakpoint, 300, 600, 30, 60",
     })
-    void loadProfileIsOverridablePerPlan(String constant, String planId, int targetLevel,
+    void loadProfileIsOverridablePerPlan(String planId, int targetLevel,
                                          int rampUp, int steps, int holdTime) throws IOException {
-        String jmx = readPlan(PlanDefinition.valueOf(constant));
+        String jmx = readPlan(planId);
 
         assertTrue(jmx.contains("${__P(" + planId + ".target_level," + targetLevel + ")}"),
                 planId + " must expose target_level with its current value as the default");
@@ -62,9 +64,9 @@ class PlanParameterizationTest {
     }
 
     @ParameterizedTest
-    @CsvSource({"BASELINE", "SPIKE", "STRESS", "ENDURANCE", "BREAKPOINT"})
+    @CsvSource({"baseline", "spike", "stress", "endurance", "breakpoint"})
     void samplersReferenceHostAndProtocolVariables(String constant) throws IOException {
-        String jmx = readPlan(PlanDefinition.valueOf(constant));
+        String jmx = readPlan(constant);
 
         assertTrue(jmx.contains("<stringProp name=\"HTTPSampler.domain\">${host}</stringProp>"),
                 constant + " samplers must resolve the domain from the host variable");

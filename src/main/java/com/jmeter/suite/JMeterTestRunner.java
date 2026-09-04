@@ -2,7 +2,9 @@ package com.jmeter.suite;
 
 import com.jmeter.suite.config.EnvironmentConfig;
 import com.jmeter.suite.config.RunnerArgs;
+import com.jmeter.suite.metrics.BackendListenerFactory;
 import com.jmeter.suite.model.PlanDefinition;
+import com.jmeter.suite.model.PlanRegistry;
 import com.jmeter.suite.report.ExecutionStats;
 import com.jmeter.suite.report.JtlAnalyzer;
 import com.jmeter.suite.report.ReportArtifactPaths;
@@ -91,10 +93,11 @@ public class JMeterTestRunner {
         environmentConfig = EnvironmentConfig.load(runnerArgs.environment());
         environmentConfig.pushToJMeter();
 
-        List<PlanDefinition> plans = PlanDefinition.resolveSuite(runnerArgs.suite());
+        PlanRegistry planRegistry = PlanRegistry.load();
+        List<PlanDefinition> plans = planRegistry.resolveSuite(runnerArgs.suite());
         if (plans.isEmpty()) {
             info("Unknown suite: " + runnerArgs.suite());
-            info("Available suites: " + PlanDefinition.supportedSuites());
+            info("Available suites: " + planRegistry.supportedSuites());
             return 1;
         }
 
@@ -265,15 +268,24 @@ public class JMeterTestRunner {
             ResultCollector collector = createCollector(artifacts.jtlPath());
             testPlanTree.add(testPlanTree.getArray()[0], collector);
 
+            BackendListenerFactory.create(environmentConfig, plan.id()).ifPresent(listener -> {
+                testPlanTree.add(testPlanTree.getArray()[0], listener);
+                info("Streaming metrics via " + listener.getClassname());
+            });
+
             engine.configure(testPlanTree);
             engine.run();
 
-            generateReport(plan, artifacts, collector);
+            // Report rendering is presentation, not result. A plan passes or fails on its SLA
+            // gates; losing the HTML dashboard (missing report templates, for instance) must not
+            // turn a healthy run into a failure. The JTL and the stats below are the real output.
+            boolean reported = tryGenerateReport(plan, artifacts);
             ExecutionStats stats = JtlAnalyzer.analyze(artifacts.jtlPath());
 
             Duration duration = Duration.between(start, Instant.now());
             info("Completed: " + plan.id() + " in " + duration.toSeconds() + "s");
-            info("Results: " + artifacts.jtlPath() + ", HTML: " + artifacts.htmlDir());
+            info("Results: " + artifacts.jtlPath()
+                    + (reported ? ", HTML: " + artifacts.htmlDir() : ", HTML: not generated"));
             info("Execution stats: samples=" + stats.sampleCount() + ", errors=" + stats.errorCount() +
                     ", errorRate=" + String.format("%.2f", stats.errorRatePercent()) + "%" +
                     ", p95=" + stats.p95ResponseTimeMs() + "ms" +
@@ -282,6 +294,25 @@ public class JMeterTestRunner {
             return evaluateThresholds(plan, stats);
         } catch (Exception ex) {
             info("Failed: " + plan.id() + " due to " + ex.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Generates the HTML report, reporting failure without aborting the plan.
+     *
+     * <p>HTML generation needs JMeter's FreeMarker templates in {@code bin/report-template}, which
+     * ship with the JMeter distribution rather than with this runner. When they are absent the run
+     * itself is still perfectly valid, so this degrades to a warning and points at the fix.
+     */
+    private boolean tryGenerateReport(PlanDefinition plan, ReportArtifactPaths artifacts) {
+        try {
+            generateReport(plan, artifacts);
+            return true;
+        } catch (Exception ex) {
+            info("HTML report not generated for " + plan.id() + ": " + ex.getMessage());
+            info("Run scripts/fetch-report-template.sh to install JMeter's report templates. "
+                    + "The JTL results and the metrics below are unaffected.");
             return false;
         }
     }
@@ -354,14 +385,19 @@ public class JMeterTestRunner {
 
     /**
      * Generates HTML report artifacts for a completed plan with CLI fallback support.
+     *
+     * <p>The collector is deliberately not passed to {@link ReportGenerator}: supplying one selects
+     * JMeter's live-generation path, which requires the JTL to still be empty and therefore always
+     * fails here, forcing a shell-out to a {@code jmeter} binary that need not exist. Passing null
+     * generates from the completed results file, which is what we want.
      */
-    private void generateReport(PlanDefinition plan, ReportArtifactPaths artifacts, ResultCollector collector) throws Exception {
+    private void generateReport(PlanDefinition plan, ReportArtifactPaths artifacts) throws Exception {
         JMeterUtils.setProperty("report.output.dir", artifacts.htmlDir().toString());
         JMeterUtils.setProperty("jmeter.reportgenerator.exporter.html.property.output_dir", artifacts.htmlDir().toString());
         JMeterUtils.setProperty("jmeter.reportgenerator.temp_dir", artifacts.htmlDir().resolve("temp").toString());
 
         try {
-            ReportGenerator generator = new ReportGenerator(artifacts.jtlPath().toString(), collector);
+            ReportGenerator generator = new ReportGenerator(artifacts.jtlPath().toString(), null);
             generator.generate();
             postProcessReport(plan, artifacts);
         } catch (Exception primary) {

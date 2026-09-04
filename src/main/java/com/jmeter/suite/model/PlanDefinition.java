@@ -1,22 +1,12 @@
 package com.jmeter.suite.model;
 
 import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
-import java.util.Optional;
-import java.util.stream.Collectors;
+import java.util.Objects;
 
 /**
- * Enumerates supported JMeter plans and suite-resolution rules.
+ * A single JMeter plan: its stable identifier and the JMX file backing it.
  */
-public enum PlanDefinition {
-    BASELINE("baseline", "test-plans/baseline.jmx"),
-    SPIKE("spike", "test-plans/spike-test.jmx"),
-    STRESS("stress", "test-plans/stress-test.jmx"),
-    ENDURANCE("endurance", "test-plans/endurance-test.jmx"),
-    BREAKPOINT("breakpoint", "test-plans/breakpoint-test.jmx");
+public final class PlanDefinition {
 
     private final String id;
     private final Path jmxPath;
@@ -24,13 +14,13 @@ public enum PlanDefinition {
     /**
      * Creates a plan definition with identifier and JMX path.
      */
-    PlanDefinition(String id, String jmxPath) {
-        this.id = id;
-        this.jmxPath = Paths.get(jmxPath);
+    public PlanDefinition(String id, Path jmxPath) {
+        this.id = Objects.requireNonNull(id, "id");
+        this.jmxPath = Objects.requireNonNull(jmxPath, "jmxPath");
     }
 
     /**
-     * Returns the stable plan identifier.
+     * Returns the stable plan identifier, derived from the JMX filename.
      */
     public String id() {
         return id;
@@ -44,38 +34,33 @@ public enum PlanDefinition {
     }
 
     /**
-     * Resolves a suite token to an ordered list of plan definitions.
+     * Returns the identifier, so log lines and collections read naturally.
      */
-    public static List<PlanDefinition> resolveSuite(String suite) {
-        String normalized = suite.toLowerCase();
-        switch (normalized) {
-            case "all":
-                return Arrays.asList(values());
-            case "quick":
-                return Collections.singletonList(BASELINE);
-            case "load":
-                return Arrays.asList(BASELINE, STRESS);
-            default:
-                return byId(normalized)
-                        .map(Collections::singletonList)
-                        .orElse(Collections.emptyList());
+    @Override
+    public String toString() {
+        return id;
+    }
+
+    /**
+     * Compares definitions by identifier and path.
+     */
+    @Override
+    public boolean equals(Object other) {
+        if (this == other) {
+            return true;
         }
+        if (!(other instanceof PlanDefinition)) {
+            return false;
+        }
+        PlanDefinition that = (PlanDefinition) other;
+        return id.equals(that.id) && jmxPath.equals(that.jmxPath);
     }
 
     /**
-     * Returns a plan definition for the provided id when available.
+     * Returns a hash consistent with {@link #equals(Object)}.
      */
-    public static Optional<PlanDefinition> byId(String id) {
-        return Arrays.stream(values())
-                .filter(plan -> plan.id.equals(id))
-                .findFirst();
-    }
-
-    /**
-     * Returns a user-facing list of all supported suite and plan names.
-     */
-    public static String supportedSuites() {
-        return "all, quick, load, " +
-                Arrays.stream(values()).map(PlanDefinition::id).collect(Collectors.joining(", "));
+    @Override
+    public int hashCode() {
+        return Objects.hash(id, jmxPath);
     }
 }

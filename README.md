@@ -10,10 +10,12 @@ JMeter performance test boilerplate with a Java runner, parameterized plans, and
 
 ## Folder structure
 - `test-plans/` JMX files (baseline + templates)
-- `data/` CSV or feeders (sample `sample.csv` included)
 - `reports/` JTL outputs and generated HTML reports (kept empty with .gitkeep)
 - `scripts/` Java runner wrapper (`run-java.sh`)
-- `config/environments/` env properties (dev/staging provided, plus `prod.properties.example`)
+- `config/environments/` env properties (dev/staging/ci provided, plus `prod.properties.example`)
+- `config/suites.properties` suite groupings (`all`, `quick`, `load`)
+- `bin/` JMeter runtime config; `bin/report-template/` is fetched, not committed
+- `.github/workflows/` CI pipeline
 - `src/test/` unit tests for suite resolution and CLI argument defaults
 - `docs/` architecture overview (Mermaid diagrams)
 
@@ -53,11 +55,64 @@ Outputs: `reports/<plan>-<timestamp>.jtl` and `reports/<plan>-<timestamp>-html/`
 - Validate correlations with assertions on both response codes and key payload fields.
 
 ## CI/CD integration
-No pipeline ships with this repository yet.
+`.github/workflows/jmeter.yml` runs two jobs on every push and pull request:
 
-When adding one, build and unit-test in CI (`mvn clean verify`) but think twice before generating
-load from a shared CI runner: results are noisy and the runner is not sized for it. Run load from a
-dedicated host and publish `reports/` from there.
+- **build** — `mvn clean verify` (compile + unit tests), uploading the runnable jar.
+- **smoke** — starts `scripts/mock-target.py` on localhost, runs the baseline plan against it via
+  the `ci` environment, and asserts that a JTL with samples and an HTML report were produced.
+  Results are uploaded as artifacts.
+
+Load is generated against a local mock, never a third-party host. A shared runner is not sized for
+real load generation, so the smoke job proves the pipeline works rather than measuring performance
+— its SLA gates are correctness-only (`p95_response_time_ms=0`, `min_throughput_tps=0`). For real
+numbers, run from a dedicated host and publish `reports/` from there.
+
+## Adding a test plan
+Drop a `.jmx` into `test-plans/`. The id is the filename without the extension and without any
+trailing `-test`, so `soak-test.jmx` becomes `soak` and is immediately runnable:
+
+```
+./scripts/run-java.sh dev soak
+```
+
+To include it in a grouping, add its id to `config/suites.properties`. No code change, no rebuild.
+
+## Tuning load per environment
+Thread groups read `${__P(<plan>.<setting>,<default>)}`, so any environment file can override load
+without touching the JMX:
+
+```
+stress.target_level=250
+stress.hold_time=600
+```
+
+Settings are `target_level`, `ramp_up`, `steps`, and `hold_time`. The JMX default applies when a
+property is unset.
+
+## Trending results
+Each run writes a standalone JTL, which means no cross-run comparison by default. To accumulate
+results into a time series, enable metric streaming in an environment file:
+
+```
+metrics.enabled=true
+metrics.classname=org.apache.jmeter.visualizers.backend.influxdb.InfluxdbBackendListenerClient
+metrics.arg.influxdbUrl=http://localhost:8086/write?db=jmeter
+metrics.arg.application=checkout-api
+```
+
+Every `metrics.arg.*` entry is passed to the backend client verbatim, so Graphite or a custom
+client works the same way. Runs are tagged with the plan and environment.
+
+## HTML reports
+The dashboard needs JMeter's FreeMarker templates, which ship with the JMeter distribution rather
+than the Maven artifacts. Install them once:
+
+```
+./scripts/fetch-report-template.sh
+```
+
+Without them the suite still runs and still enforces its SLA gates; only the HTML dashboard is
+skipped.
 
 ## Best practices
 - Keep tests deterministic: control data with CSVs, set think times explicitly, and avoid hidden retries.

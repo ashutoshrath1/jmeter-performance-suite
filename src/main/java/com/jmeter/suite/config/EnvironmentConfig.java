@@ -7,6 +7,8 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
 
@@ -32,7 +34,13 @@ public final class EnvironmentConfig {
      * Loads an environment configuration file by environment name.
      */
     public static EnvironmentConfig load(String environment) throws IOException {
-        Path envPath = Paths.get(ENV_CONFIG_DIR, environment + ".properties");
+        return load(environment, Paths.get(ENV_CONFIG_DIR, environment + ".properties"));
+    }
+
+    /**
+     * Loads an environment configuration from an explicit file, for tests and alternate layouts.
+     */
+    public static EnvironmentConfig load(String environment, Path envPath) throws IOException {
         if (!Files.exists(envPath)) {
             throw new IllegalStateException("Environment config not found: " + envPath);
         }
@@ -43,6 +51,36 @@ public final class EnvironmentConfig {
         }
 
         return new EnvironmentConfig(environment, properties);
+    }
+
+    /**
+     * Returns whether a property is set to a truthy value.
+     */
+    public boolean flag(String key, boolean defaultValue) {
+        return Boolean.parseBoolean(get(key, String.valueOf(defaultValue)));
+    }
+
+    /**
+     * Returns a property value with an explicit fallback.
+     */
+    public String value(String key, String defaultValue) {
+        return get(key, defaultValue);
+    }
+
+    /**
+     * Returns every property under a prefix, keyed by the remainder of the name.
+     *
+     * <p>Used to pass arbitrary client arguments through to a backend listener without this class
+     * needing to know which metrics backend is in play.
+     */
+    public Map<String, String> withPrefix(String prefix) {
+        Map<String, String> matched = new LinkedHashMap<>();
+        properties.stringPropertyNames().stream()
+                .filter(name -> name.startsWith(prefix) && name.length() > prefix.length())
+                .sorted()
+                .forEach(name -> matched.put(name.substring(prefix.length()),
+                        properties.getProperty(name)));
+        return matched;
     }
 
     /**

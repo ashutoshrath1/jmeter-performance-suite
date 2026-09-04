@@ -35,13 +35,19 @@ Key classes (`src/main/java/com/jmeter/suite/`):
 - `JMeterTestRunner` — entry point (`main(environment, suite)`), orchestrates the flow above and resolves the shaded JAR's main class.
 - `config/EnvironmentConfig` — loads/merges `jmeter.properties` with the environment-specific properties file.
 - `config/RunnerArgs` — parses/defaults CLI args (environment, suite, health-check flag).
-- `model/PlanDefinition` — maps suite names (`all`/`quick`/`load`/single plan) to the `.jmx` files under `test-plans/`.
+- `model/PlanRegistry` — discovers `test-plans/*.jmx` and resolves suite names using `config/suites.properties`. Plan ids come from the filename minus the extension and any trailing `-test`. Adding a plan needs no code change.
+- `model/PlanDefinition` — a plan's id plus its JMX path.
+- `metrics/BackendListenerFactory` — builds a `BackendListener` from `metrics.*` environment properties so runs can stream into a time-series backend. Backend-agnostic: `metrics.arg.*` is passed to the client verbatim. Off unless `metrics.enabled=true`.
 - `report/ReportArtifactPaths` — computes per-run JTL/HTML/zip paths under `reports/`.
 - `report/JtlAnalyzer` + `report/ExecutionStats` — parse the JTL (columns resolved by header name, RFC4180 quoting) into sample/error counts, p95 latency, and throughput. Never split JTL lines on bare commas; JMeter quotes fields that contain them.
 
 Test plans (`test-plans/*.jmx`) are JMeter designs using BlazeMeter's Concurrency Thread Group and Throughput Shaping Timer for load profiles, parameterized via JMeter property functions. Samplers read `${host}`/`${protocol}`/`${__P(port,)}`, and each thread group reads `${__P(<plan>.target_level,<default>)}` (plus `ramp_up`, `steps`, `hold_time`), so `config/environments/*.properties` can override load per plan while the JMX default preserves current behaviour. This requires the `ApacheJMeter_functions` dependency — without it every `${__...}` stays literal text. `baseline.jmx` demonstrates the correlation pattern used across plans: a JSON Extractor captures a value (e.g. `userId`) from one sampler's response and reuses it via `${varName}` in a later sampler/assertion — follow this pattern when adding new extractors.
 
-No CI pipeline ships with this repo. `bin/saveservice.properties` and `bin/log4j2.xml` are required at runtime: JMeter home is the project root, and without them no `.jmx` will load.
+`.github/workflows/jmeter.yml` runs unit tests, then a smoke job that starts `scripts/mock-target.py` on localhost and executes the baseline plan through the `ci` environment. Never point CI load at a real or third-party host.
+
+Runtime files under `bin/` (JMeter home is the project root): `saveservice.properties` and `log4j2.xml` are committed and required — without them no `.jmx` will load. `reportgenerator.properties` is committed too. `bin/report-template/` is ~3MB of third-party assets, so it is gitignored and fetched via `scripts/fetch-report-template.sh`; without it the suite still runs and still gates, only the HTML dashboard is skipped.
+
+A plan's pass/fail comes from its SLA gates alone. Report generation failures are logged and do not fail the plan.
 
 ## Cross-tool run rules (from AGENTS.md — apply to Claude Code too)
 
