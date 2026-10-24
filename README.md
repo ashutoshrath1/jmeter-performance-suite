@@ -153,6 +153,8 @@ other plans need the BlazeMeter plugins.
 
 ## Docs
 - Architecture: `docs/architecture.md`
+- Runbook: `docs/runbook.md`
+- SLA and baseline policy: `docs/sla-policy.md`
 - Changelog: `CHANGELOG.md`
 - Contributing: `CONTRIBUTING.md`
 - License: `LICENSE`
