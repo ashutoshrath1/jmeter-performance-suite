@@ -186,6 +186,26 @@ public final class EnvironmentConfig {
     }
 
     /**
+     * Returns whether regression comparison against the approved plan baseline is enabled.
+     *
+     * <p>The environment variable is intended for CI, so local configuration stays opt-in.
+     */
+    public boolean baselineCompareEnabled() {
+        String override = System.getenv("BASELINE_COMPARE_ENABLED");
+        if (override != null && !override.trim().isEmpty()) {
+            return Boolean.parseBoolean(override.trim());
+        }
+        return flag("baseline.compare.enabled", false);
+    }
+
+    /**
+     * Returns the maximum permitted regression from an approved baseline, as a percentage.
+     */
+    public double baselineTolerancePercent() {
+        return Double.parseDouble(get("baseline.tolerance.percent", "10"));
+    }
+
+    /**
      * Returns the remote JMeter server hosts for distributed execution, empty when running locally.
      *
      * <p>Each entry is {@code host} or {@code host:port}, matching JMeter's own {@code remote_hosts}

@@ -11,6 +11,7 @@ import com.jmeter.suite.report.JtlAnalyzer;
 import com.jmeter.suite.report.ReportArtifactPaths;
 import com.jmeter.suite.report.ReportPublisher;
 import com.jmeter.suite.runtime.DistributedTestRunner;
+import com.jmeter.suite.quality.BaselineComparator;
 import com.jmeter.suite.runtime.JMeterRuntime;
 import com.jmeter.suite.util.FileOps;
 import com.jmeter.suite.util.Log;
@@ -46,6 +47,7 @@ public class JMeterTestRunner {
     private final RunnerArgs runnerArgs;
     private EnvironmentConfig environmentConfig;
     private ReportPublisher reportPublisher;
+    private final BaselineComparator baselineComparator = new BaselineComparator();
 
     /**
      * Creates a runner bound to parsed command-line arguments.
@@ -180,7 +182,10 @@ public class JMeterTestRunner {
                     + ", p95=" + stats.p95ResponseTimeMs() + "ms"
                     + ", throughput=" + String.format("%.2f", stats.throughputTps()) + "/s");
 
-            return evaluateThresholds(plan, stats);
+            if (!evaluateThresholds(plan, stats)) {
+                return false;
+            }
+            return evaluateBaseline(plan, stats);
         } catch (Exception ex) {
             Log.info("Failed: " + plan.id() + " due to " + ex.getMessage());
             return false;
@@ -220,6 +225,18 @@ public class JMeterTestRunner {
         }
 
         return true;
+    }
+
+    /** Evaluates the optional versioned baseline regression gate after normal SLA checks pass. */
+    private boolean evaluateBaseline(PlanDefinition plan, ExecutionStats stats) {
+        if (!environmentConfig.baselineCompareEnabled()) {
+            return true;
+        }
+        List<String> failures = baselineComparator.compare(plan.id(), environmentConfig, stats);
+        for (String failure : failures) {
+            Log.info("Baseline failed: " + plan.id() + " - " + failure);
+        }
+        return failures.isEmpty();
     }
 
     /**

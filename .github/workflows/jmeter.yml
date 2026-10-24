@@ -37,6 +37,8 @@ jobs:
     name: End-to-end smoke run
     needs: build
     runs-on: ubuntu-latest
+    env:
+      BASELINE_COMPARE_ENABLED: true
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
